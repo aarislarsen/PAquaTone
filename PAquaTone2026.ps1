@@ -142,6 +142,8 @@ function Invoke-PAquaTone {
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-background-networking",
+            "--log-level=3",
             "--timeout=$ChromeTimeout",
             "--screenshot=`"$OutFile`"",
             "`"$Url`""
@@ -149,7 +151,8 @@ function Invoke-PAquaTone {
 
         $proc = Start-Process -FilePath $ChromePath `
             -ArgumentList $argList `
-            -PassThru -NoNewWindow
+            -PassThru -NoNewWindow `
+            -RedirectStandardError "$env:TEMP\paquatone_stderr_$PID.tmp"
 
         if (-not $proc.WaitForExit($ProcessTimeout)) {
             Write-Host "  [!] Timeout — killing Chrome PID $($proc.Id) for $Url"
@@ -331,6 +334,8 @@ function Invoke-PAquaTone {
                     "--disable-gpu",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-background-networking",
+                    "--log-level=3",
                     "--timeout=$ChromeTimeout",
                     "--screenshot=`"$outFile`"",
                     "`"$url`""
@@ -338,7 +343,8 @@ function Invoke-PAquaTone {
 
                 $proc = Start-Process -FilePath $ChromeExe `
                     -ArgumentList $argList `
-                    -PassThru -NoNewWindow
+                    -PassThru -NoNewWindow `
+                    -RedirectStandardError "$env:TEMP\paquatone_stderr_$PID.tmp"
 
                 if (-not $proc.WaitForExit($ProcessTimeout)) {
                     $proc.Kill()
