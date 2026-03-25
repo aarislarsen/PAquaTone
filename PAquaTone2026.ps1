@@ -41,6 +41,12 @@ function Invoke-PAquaTone {
     .PARAMETER Threads
         Number of concurrent threads. Default: 1 (single-threaded).
 
+    .PARAMETER ChromeTimeout
+        Milliseconds Chrome is allowed to load a page before self-terminating. Default: 10000
+
+    .PARAMETER ProcessTimeout
+        Milliseconds the script waits for a Chrome process to exit before force-killing it. Default: 15000
+
     .EXAMPLE
         Invoke-PAquaTone -StartIP 10.0.0.1 -EndIP 10.0.0.254 -OutDir C:\recon\out
         Invoke-PAquaTone -IPList .\ips.txt -OutDir C:\recon\out -Ports "80,443,8080" -Threads 4
@@ -55,8 +61,10 @@ function Invoke-PAquaTone {
         [Parameter(ParameterSetName = 'HostList', Mandatory = $true)]  [string]$HostList,
 
         [Parameter(Mandatory = $true)]  [string]$OutDir,
-        [Parameter(Mandatory = $false)] [string]$Ports   = "80,8080,443,8443,8090,10000,5601,8000,9090,9990,9993",
-        [Parameter(Mandatory = $false)] [int]   $Threads = 1
+        [Parameter(Mandatory = $false)] [string]$Ports          = "80,8080,443,8443,8090,10000,5601,8000,9090,9990,9993",
+        [Parameter(Mandatory = $false)] [int]   $Threads        = 1,
+        [Parameter(Mandatory = $false)] [int]   $ChromeTimeout  = 10000,
+        [Parameter(Mandatory = $false)] [int]   $ProcessTimeout = 15000
     )
 
     Set-StrictMode -Version Latest
@@ -118,6 +126,38 @@ function Invoke-PAquaTone {
     }
 
     # ---------------------------------------------------------------------------
+    # Inner helper: Screenshot a single URL with hard process timeout
+    # ---------------------------------------------------------------------------
+    function Invoke-ChromeScreenshot {
+        param(
+            [string] $ChromePath,
+            [string] $Url,
+            [string] $OutFile,
+            [int]    $ChromeTimeout,
+            [int]    $ProcessTimeout
+        )
+
+        $argList = @(
+            "--headless",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--timeout=$ChromeTimeout",
+            "--screenshot=`"$OutFile`"",
+            "`"$Url`""
+        )
+
+        $proc = Start-Process -FilePath $ChromePath `
+            -ArgumentList $argList `
+            -PassThru -NoNewWindow
+
+        if (-not $proc.WaitForExit($ProcessTimeout)) {
+            Write-Host "  [!] Timeout — killing Chrome PID $($proc.Id) for $Url"
+            $proc.Kill()
+        }
+    }
+
+    # ---------------------------------------------------------------------------
     # Inner helper: Screenshot a single host across all ports
     # ---------------------------------------------------------------------------
     function Invoke-Screenshot {
@@ -125,7 +165,9 @@ function Invoke-PAquaTone {
             [string]  $FQDN,
             [int[]]   $PortList,
             [string]  $OutputDir,
-            [string]  $ChromePath
+            [string]  $ChromePath,
+            [int]     $ChromeTimeout,
+            [int]     $ProcessTimeout
         )
 
         $schemaPorts = @{
@@ -140,8 +182,8 @@ function Invoke-PAquaTone {
             $outFile = Join-Path $OutputDir "${safe}-${port}.png"
 
             Write-Host "  -> $url"
-            & $ChromePath --headless --disable-gpu --no-sandbox `
-                --screenshot="$outFile" "$url" 2>$null
+            Invoke-ChromeScreenshot -ChromePath $ChromePath -Url $url -OutFile $outFile `
+                -ChromeTimeout $ChromeTimeout -ProcessTimeout $ProcessTimeout
         }
     }
 
@@ -167,6 +209,7 @@ function Invoke-PAquaTone {
     [int[]]$PortList = $Ports -split ',' | ForEach-Object { [int]$_.Trim() }
     Write-Host "[*] Ports: $($PortList -join ', ')"
     Write-Host "[*] Threads: $Threads"
+    Write-Host "[*] Chrome timeout: ${ChromeTimeout}ms / Process kill timeout: ${ProcessTimeout}ms"
     Write-Host ""
 
     # ---------------------------------------------------------------------------
@@ -263,14 +306,17 @@ function Invoke-PAquaTone {
     if ($Threads -le 1) {
         foreach ($fqdn in $Targets) {
             Write-Host "[>] $fqdn"
-            Invoke-Screenshot -FQDN $fqdn -PortList $PortList -OutputDir $OutDir -ChromePath $ChromeExe
+            Invoke-Screenshot -FQDN $fqdn -PortList $PortList -OutputDir $OutDir `
+                -ChromePath $ChromeExe -ChromeTimeout $ChromeTimeout -ProcessTimeout $ProcessTimeout
         }
     } else {
         $Targets | ForEach-Object -ThrottleLimit $Threads -Parallel {
-            $fqdn      = $_
-            $PortList  = $using:PortList
-            $OutDir    = $using:OutDir
-            $ChromeExe = $using:ChromeExe
+            $fqdn           = $_
+            $PortList       = $using:PortList
+            $OutDir         = $using:OutDir
+            $ChromeExe      = $using:ChromeExe
+            $ChromeTimeout  = $using:ChromeTimeout
+            $ProcessTimeout = $using:ProcessTimeout
 
             $schemaPorts = @{ 443 = 'https'; 8443 = 'https' }
 
@@ -280,8 +326,23 @@ function Invoke-PAquaTone {
                 $safe    = $fqdn -replace '[\\/:*?"<>|]', '_'
                 $outFile = Join-Path $OutDir "${safe}-${port}.png"
 
-                & $ChromeExe --headless --disable-gpu --no-sandbox `
-                    --screenshot="$outFile" "$url" 2>$null
+                $argList = @(
+                    "--headless",
+                    "--disable-gpu",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--timeout=$ChromeTimeout",
+                    "--screenshot=`"$outFile`"",
+                    "`"$url`""
+                )
+
+                $proc = Start-Process -FilePath $ChromeExe `
+                    -ArgumentList $argList `
+                    -PassThru -NoNewWindow
+
+                if (-not $proc.WaitForExit($ProcessTimeout)) {
+                    $proc.Kill()
+                }
             }
             Write-Host "[>] Done: $fqdn"
         }
@@ -289,5 +350,4 @@ function Invoke-PAquaTone {
 
     Write-Host ("-" * 60)
     Write-Host "[*] Screenshotting complete. Output: $OutDir"
-    Write-Host "[!] Chrome processes may linger — allow 30s for cleanup."
 }
